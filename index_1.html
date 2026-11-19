@@ -243,6 +243,8 @@
   .cal-cell.sat{background:#fbfcff}
   .cal-cell.sun{background:#fffbfb}
   .cal-cell.today{box-shadow:inset 0 0 0 2px #4f46e5; z-index:1}
+  .cal-cell.all-done{background:#f6fcf8}
+  button.cal-cell.all-done:hover{background:#eef9f2}
   .cal-cell.blank{background:#fbfbfd; pointer-events:none}
   .cal-date{
     font-size:12px; font-weight:800; width:23px; height:23px; display:grid; place-items:center;
@@ -532,8 +534,11 @@
       <div class="cal-grid" id="calGrid" role="grid" aria-label="월간 달력"></div>
     </div>
     <div class="cal-foot">
-      <span>● 색 점 = 마감 할 일 &nbsp;·&nbsp; ○ 숫자 = 습관(요일 루틴)</span>
+      <span>● 색 점 = 남은 마감 할 일 &nbsp;·&nbsp; ○ 숫자 = 남은 습관(요일 루틴)</span>
       <span><b>날짜를 누르면</b> 그날 할 일을 열고 바로 체크·수정할 수 있어요.</span>
+    </div>
+    <div class="cal-foot" style="margin-top:4px">
+      <span>다 체크한 날은 점·숫자가 사라집니다. 완료한 항목은 날짜를 눌러 확인·해제할 수 있어요.</span>
     </div>
   </div>
 
@@ -1351,35 +1356,70 @@
       '<span class="chip-ico" aria-hidden="true">' + esc(c.icon) + '</span>' + esc(t.title) + '</span>';
   }
 
-  function habitLineHTML(habits) {
-    var dots = habits.slice(0, 3).map(function (h) {
+  /* 달력 칸에는 '아직 체크하지 않은' 습관·마감 할 일만 표시한다.
+     전부 체크한 날은 숫자 배지도 색 점도 남기지 않는다. (상세 모달에서는 완료 항목도 그대로 보인다) */
+  function pendingHabitsOn(dateStr, habits) {
+    return habits.filter(function (h) { return !isLogged(dateStr, h.task.id, h.mode); });
+  }
+  function pendingDueOn(due) {
+    return due.filter(function (t) { return !t.done; });
+  }
+
+  function habitLineHTML(pending, total) {
+    var dots = pending.slice(0, 3).map(function (h) {
       var c = catById(h.task.cat);
       var col = c ? c.color : '#059669';
       return h.mode === 'review'
         ? '<i class="hd rev" style="border-color:' + esc(col) + '"></i>'
         : '<i class="hd" style="background:' + esc(col) + '"></i>';
     }).join('');
-    return '<span class="habit-line"><span class="habit-dots">' + dots + '</span>습관 ' + habits.length + '</span>';
+    var tip = total === pending.length
+      ? '이 날 습관 ' + total + '개 남음'
+      : '이 날 습관 ' + total + '개 중 ' + pending.length + '개 남음';
+    return '<span class="habit-line" title="' + esc(tip) + '"><span class="habit-dots">' + dots + '</span>습관 ' + pending.length + '</span>';
   }
 
   function dotsHTML(dateStr, due, habits) {
     var parts = [];
-    due.slice(0, 3).forEach(function (t) {
+    var pendingDue = pendingDueOn(due);
+    pendingDue.slice(0, 3).forEach(function (t) {
       var c = catById(t.cat);
-      parts.push('<i class="cd" style="background:' + esc(c ? c.color : '#64748B') + (t.done ? ';opacity:.4' : '') + '"></i>');
+      parts.push('<i class="cd" style="background:' + esc(c ? c.color : '#64748B') + '"></i>');
     });
-    if (due.length > 3) parts.push('<span class="more">+' + (due.length - 3) + '</span>');
-    if (habits.length) {
-      var hc = catById(habits[0].task.cat);
-      var col = hc ? hc.color : '#059669';
-      parts.push('<span class="hq" style="color:' + esc(col) + '" title="습관 ' + habits.length + '개">' + habits.length + '</span>');
-    }
+    if (pendingDue.length > 3) parts.push('<span class="more">+' + (pendingDue.length - 3) + '</span>');
+
+    /* 습관 숫자 배지는 목록별로 '남은 개수'만. 0개인 목록은 배지를 만들지 않는다. */
+    var order = [];
+    var byCat = {};
+    pendingHabitsOn(dateStr, habits).forEach(function (h) {
+      var cid = h.task.cat;
+      if (!byCat[cid]) { byCat[cid] = 0; order.push(cid); }
+      byCat[cid] += 1;
+    });
+    order.forEach(function (cid) {
+      var c = catById(cid);
+      var col = c ? c.color : '#059669';
+      var nm = c ? c.name : '습관';
+      parts.push('<span class="hq" style="color:' + esc(col) + '" title="' + esc(nm + ' 습관 ' + byCat[cid] + '개 남음') + '">' + byCat[cid] + '</span>');
+    });
     return parts.join('');
+  }
+
+  function cellAria(dateStr, due, habits) {
+    var bits = [fmtDayLabel(dateStr)];
+    bits.push(due.length
+      ? '마감 ' + due.length + '개 중 미완료 ' + pendingDueOn(due).length + '개'
+      : '마감 없음');
+    if (habits.length) {
+      bits.push('습관 ' + habits.length + '개 중 ' + pendingHabitsOn(dateStr, habits).length + '개 남음');
+    }
+    return bits.join(', ');
   }
 
   function cellHTML(dateStr, dayNum, dow) {
     var due = dueTasksOn(dateStr);
     var habits = habitsOn(dateStr);
+    var pendHabits = pendingHabitsOn(dateStr, habits);
     var isToday = dateStr === todayStr();
     var cls = 'cal-cell' + (dow === 0 ? ' sun' : (dow === 6 ? ' sat' : '')) + (isToday ? ' today' : '');
     var shownDue = due.slice(0, 2);
@@ -1387,12 +1427,13 @@
 
     var chips = shownDue.map(chipHTML).join('');
     if (rest > 0) chips += '<span class="chip-more">+' + rest + '개</span>';
-    if (habits.length) chips += habitLineHTML(habits);
+    if (pendHabits.length) chips += habitLineHTML(pendHabits, habits.length);
 
     var dots = dotsHTML(dateStr, due, habits);
+    var allDone = (due.length > 0 || habits.length > 0) && !pendingDueOn(due).length && !pendHabits.length;
 
-    return '<button type="button" class="' + cls + '" data-day="' + dateStr + '" aria-label="' +
-      esc(fmtDayLabel(dateStr)) + ', 마감 ' + due.length + '개, 습관 ' + habits.length + '개">' +
+    return '<button type="button" class="' + cls + (allDone ? ' all-done' : '') + '" data-day="' + dateStr + '" aria-label="' +
+      esc(cellAria(dateStr, due, habits)) + '">' +
       '<span class="cal-date">' + dayNum + '</span>' +
       '<span class="cal-chips">' + chips + '</span>' +
       '<span class="cal-dots">' + dots + '</span>' +
